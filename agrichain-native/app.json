@@ -20,6 +20,12 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "5421312e-e4ba-4630-af70-1547d01eb113"
+      }
+    },
+    "owner": "taianh1410"
   }
 }
