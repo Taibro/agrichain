@@ -1,0 +1,28 @@
+{
+  "cli": {
+    "version": ">= 12.0.0"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "channel": "development"
+    },
+    "preview": {
+      "distribution": "internal",
+      "channel": "preview"
+    },
+    "production": {
+      "channel": "production",
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_BASE": "https://agrichain-dev-api.duckdns.org",
+        "EXPO_PUBLIC_AUTH_ISSUER": "https://auth-dev-api.duckdns.org/realms/agrichain",
+        "EXPO_PUBLIC_AUTH_CLIENT": "agrichain-driver"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
