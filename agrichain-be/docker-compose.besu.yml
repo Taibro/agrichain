@@ -1,0 +1,41 @@
+services:
+  besu-validator-1: &besu
+    image: hyperledger/besu:24.7.0
+    command:
+      [
+        "--data-path=/data",
+        "--genesis-file=/genesis/genesis.json",
+        "--p2p-port=30303",
+        "--rpc-http-enabled",
+        "--rpc-http-api=ETH,NET,QBFT",
+        "--rpc-http-host=0.0.0.0",
+        "--host-allowlist=*"
+      ]
+    volumes:
+      - ./besu/genesis.json:/genesis/genesis.json:ro
+      - ./besu/v1:/data
+    networks: [agrichain_net]
+    restart: unless-stopped
+    mem_limit: 1536m
+
+  besu-validator-2:
+    <<: *besu
+    volumes:
+      - ./besu/genesis.json:/genesis/genesis.json:ro
+      - ./besu/v2:/data
+
+  besu-validator-3:
+    <<: *besu
+    volumes:
+      - ./besu/genesis.json:/genesis/genesis.json:ro
+      - ./besu/v3:/data
+
+  besu-validator-4:
+    <<: *besu
+    volumes:
+      - ./besu/genesis.json:/genesis/genesis.json:ro
+      - ./besu/v4:/data
+
+networks:
+  agrichain_net:
+    external: true

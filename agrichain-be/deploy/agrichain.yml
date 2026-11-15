@@ -1,0 +1,145 @@
+---
+- name: Deploy AgriChain backend stack
+  hosts: all
+  become: true
+  vars:
+    dir: /opt/agrichain/backend
+    backup_dir: /opt/agrichain/backups
+    mysql_root_password: "{{ lookup('env', 'AGRI_MYSQL_ROOT_PASSWORD') }}"
+    mysql_password:      "{{ lookup('env', 'AGRI_MYSQL_PASSWORD') }}"
+    mongo_password:      "{{ lookup('env', 'AGRI_MONGO_PASSWORD') }}"
+    redis_password:      "{{ lookup('env', 'AGRI_REDIS_PASSWORD') }}"
+    neo4j_password:      "{{ lookup('env', 'AGRI_NEO4J_PASSWORD') }}"
+    rabbitmq_password:   "{{ lookup('env', 'AGRI_RABBITMQ_PASSWORD') }}"
+    mqtt_password:       "{{ lookup('env', 'AGRI_MQTT_PASSWORD') }}"
+    keycloak_admin_password: "{{ lookup('env', 'AGRI_KC_ADMIN_PASSWORD') }}"
+    r2_access_key:       "{{ lookup('env', 'AGRI_R2_ACCESS_KEY') }}"
+    r2_secret_key:       "{{ lookup('env', 'AGRI_R2_SECRET_KEY') }}"
+    ghcr_pat:            "{{ lookup('env', 'GHCR_PAT') }}"
+    ghcr_owner:          "{{ lookup('env', 'GHCR_OWNER') | lower }}"
+    image_tag:           "{{ lookup('env', 'IMAGE_TAG') | default('latest', true) }}"
+    office_ip:           "{{ lookup('env', 'OFFICE_IP') | default('203.0.113.10', true) }}"
+
+  pre_tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - mysql_password | length >= 12
+          - mongo_password | length >= 12
+          - redis_password | length >= 12
+          - neo4j_password | length >= 8
+          - rabbitmq_password | length >= 12
+          - api_domain | default('') | length > 0
+          - auth_domain | default('') | length > 0
+          - frontend_origin | default('') is match('^https://[^/]+$')
+          - r2_access_key | length > 10
+        fail_msg: "Thiếu/không hợp lệ biến môi trường AGRI_*, api_domain, auth_domain, frontend_origin"
+
+  tasks:
+    - name: Ensure directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0750"
+      loop:
+        - "{{ dir }}"
+        - "{{ dir }}/docker"
+        - "{{ dir }}/docker/mosquitto"
+        - "{{ dir }}/docker/mysql"
+        - "{{ dir }}/docker/mongo"
+        - "{{ backup_dir }}"
+        - "/opt/agrichain/scripts"
+        - "/root/.config/rclone"
+
+    - name: Template .env (backend production)
+      ansible.builtin.template:
+        src: templates/agrichain.env.j2
+        dest: "{{ dir }}/.env"
+        mode: "0600"
+
+    - name: Copy mosquitto, db init, nginx & compose files
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ dir }}/{{ item.dest }}"
+        mode: "{{ item.mode | default('0644') }}"
+      loop:
+        - { src: "../docker/mosquitto/passwd", dest: "docker/mosquitto/passwd", mode: "0600" }
+        - { src: "../docker/mosquitto/mosquitto.conf", dest: "docker/mosquitto/mosquitto.conf" }
+        - { src: "../docker/mysql/init.sql", dest: "docker/mysql/init.sql" }
+        - { src: "../docker/mongo/init-indexes.js", dest: "docker/mongo/init-indexes.js" }
+        - { src: "../docker/nginx.conf", dest: "docker/nginx.conf" }
+        - { src: "../docker-compose.yml", dest: "docker-compose.yml" }
+
+    - name: Login GHCR
+      ansible.builtin.shell: printf '%s' "{{ ghcr_pat }}" | docker login ghcr.io -u "{{ ghcr_owner }}" --password-stdin
+      no_log: true
+      changed_when: false
+
+    - name: Pull images
+      ansible.builtin.shell: export GHCR_OWNER="{{ ghcr_owner }}" IMAGE_TAG="{{ image_tag }}" && docker compose pull
+      args: { chdir: "{{ dir }}", executable: /bin/bash }
+
+    - name: Up stack and wait healthchecks
+      ansible.builtin.shell: export GHCR_OWNER="{{ ghcr_owner }}" IMAGE_TAG="{{ image_tag }}" && docker compose up -d --wait --wait-timeout 420
+      args: { chdir: "{{ dir }}", executable: /bin/bash }
+
+    - name: Wait API health qua Nginx nội bộ
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8082/actuator/health
+        status_code: 200
+      register: api
+      until: api.status == 200
+      retries: 30
+      delay: 5
+
+    - name: Firewall — whitelist IP văn phòng cho CSDL (lớp host)
+      ansible.builtin.ufw:
+        rule: allow
+        src: "{{ office_ip }}/32"
+        port: "{{ item }}"
+        proto: tcp
+        comment: "AgriChain DB remote"
+      loop: ["3306", "27017", "6379", "9042", "7474", "7687", "5672", "15672", "1883", "9001"]
+
+    - name: Firewall — chặn Docker bypass UFW (DOCKER-USER chain)
+      ansible.builtin.shell: |
+        for p in 3306 27017 6379 9042 7474 7687 5672 15672 1883 9001; do
+          iptables -C DOCKER-USER -p tcp --dport $p ! -s {{ office_ip }} -j DROP 2>/dev/null || \
+          iptables -I DOCKER-USER -p tcp --dport $p ! -s {{ office_ip }} -j DROP
+        done
+      changed_when: false
+
+    - name: rclone config (R2 — backup)
+      ansible.builtin.template:
+        src: templates/rclone.conf.j2
+        dest: /root/.config/rclone/rclone.conf
+        mode: "0600"
+
+    - name: Deploy backup & anchor scripts
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /opt/agrichain/scripts/
+        mode: "0700"
+      loop:
+        - "../scripts/backup-mongo.sh"
+        - "../scripts/backup-cassandra-csv.sh"
+        - "../scripts/backup-mysql.sh"
+        - "../scripts/backup-neo4j.sh"
+        - "../scripts/anchor-github.sh"
+
+    - name: Cron backup hằng ngày lên R2
+      ansible.builtin.cron:
+        name: "{{ item.name }}"
+        minute: "{{ item.minute }}"
+        hour: "{{ item.hour }}"
+        job: "/opt/agrichain/scripts/{{ item.script }} >> /opt/agrichain/backups/cron.log 2>&1"
+      loop:
+        - { name: agrichain-mongo-backup,     minute: "30", hour: "2", script: backup-mongo.sh }
+        - { name: agrichain-cassandra-csv,    minute: "0",  hour: "3", script: backup-cassandra-csv.sh }
+        - { name: agrichain-mysql-backup,     minute: "30", hour: "3", script: backup-mysql.sh }
+        - { name: agrichain-neo4j-backup,     minute: "0",  hour: "4", script: backup-neo4j.sh }
+        - { name: agrichain-anchor-daily,     minute: "0",  hour: "2", script: anchor-github.sh }
+
+    - name: Prune old images
+      ansible.builtin.command: docker image prune -f
+      changed_when: false

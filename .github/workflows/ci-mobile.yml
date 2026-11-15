@@ -1,0 +1,57 @@
+name: CI - Mobile (AgriChain Driver)
+
+on:
+  push:
+    branches: [main, develop]
+    paths: ['agrichain-native/**', '.github/workflows/ci-mobile.yml']
+  pull_request:
+    branches: [main]
+    paths: ['agrichain-native/**']
+
+concurrency:
+  group: ci-mobile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agrichain-native
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: agrichain-native/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm test -- --coverage --watchAll=false
+
+  build-apk:
+    needs: lint-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agrichain-native
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: agrichain-native/package-lock.json
+      - run: npm ci
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: "${{ secrets.EXPO_TOKEN }}"
+      - run: eas build --platform android --profile production --non-interactive --local
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agrichain-driver-apk
+          path: agrichain-native/*.apk
+          retention-days: 14

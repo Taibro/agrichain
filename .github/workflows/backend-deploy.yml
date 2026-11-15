@@ -1,0 +1,82 @@
+name: AgriChain Backend → Oracle VPS
+
+on:
+  workflow_run:
+    workflows: ["Build & Push Backend Image"]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: agrichain-backend-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      SERVER_IP: ${{ vars.SERVER_IP }}
+      IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Prepare SSH (key + known_hosts)
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          : "${SERVER_IP:?Variable SERVER_IP is not set}"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$SERVER_IP" >> ~/.ssh/known_hosts
+
+      - name: Sync compose, nginx, mosquitto & backup scripts
+        run: |
+          rsync -az --delete -e "ssh -i ~/.ssh/id_deploy" \
+            agrichain-be/docker/ "ubuntu@${SERVER_IP}:/opt/agrichain/backend/docker/"
+          rsync -az -e "ssh -i ~/.ssh/id_deploy" \
+            agrichain-be/docker-compose.yml "ubuntu@${SERVER_IP}:/opt/agrichain/backend/docker-compose.yml"
+          rsync -az -e "ssh -i ~/.ssh/id_deploy" \
+            agrichain-be/scripts/ "ubuntu@${SERVER_IP}:/opt/agrichain/scripts/"
+
+      - name: Install ansible-core
+        run: pip install --quiet ansible-core
+
+      - name: Lowercase repository owner
+        run: echo "REPO_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+
+      - name: Run playbook
+        working-directory: agrichain-be/deploy
+        env:
+          AGRI_MYSQL_ROOT_PASSWORD: ${{ secrets.AGRI_MYSQL_ROOT_PASSWORD }}
+          AGRI_MYSQL_PASSWORD:      ${{ secrets.AGRI_MYSQL_PASSWORD }}
+          AGRI_MONGO_PASSWORD:      ${{ secrets.AGRI_MONGO_PASSWORD }}
+          AGRI_REDIS_PASSWORD:      ${{ secrets.AGRI_REDIS_PASSWORD }}
+          AGRI_NEO4J_PASSWORD:      ${{ secrets.AGRI_NEO4J_PASSWORD }}
+          AGRI_RABBITMQ_PASSWORD:   ${{ secrets.AGRI_RABBITMQ_PASSWORD }}
+          AGRI_MQTT_PASSWORD:       ${{ secrets.AGRI_MQTT_PASSWORD }}
+          AGRI_KC_ADMIN_PASSWORD:   ${{ secrets.AGRI_KC_ADMIN_PASSWORD }}
+          AGRI_R2_ACCESS_KEY:       ${{ secrets.AGRI_R2_ACCESS_KEY }}
+          AGRI_R2_SECRET_KEY:       ${{ secrets.AGRI_R2_SECRET_KEY }}
+          R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
+          GHCR_PAT:                 ${{ secrets.GHCR_PAT }}
+          GHCR_OWNER:               ${{ env.REPO_OWNER }}
+          IMAGE_TAG:                ${{ env.IMAGE_TAG }}
+          OFFICE_IP:                ${{ vars.OFFICE_IP }}
+        run: >
+          ansible-playbook -i hosts.ini agrichain.yml
+          -e api_domain=${{ vars.API_DOMAIN }}
+          -e auth_domain=${{ vars.AUTH_DOMAIN }}
+          -e frontend_origin=${{ vars.FRONTEND_ORIGIN }}
+          -e r2_account_id=${{ secrets.R2_ACCOUNT_ID }}
+
+      - name: Smoke test API health
+        run: curl -fsS "https://${{ vars.API_DOMAIN }}/actuator/health"

@@ -1,0 +1,42 @@
+name: CI - Backend (AgriChain)
+
+on:
+  push:
+    branches: [main]
+    paths: ['agrichain-be/**', '.github/workflows/ci-backend.yml']
+  pull_request:
+    branches: [main]
+    paths: ['agrichain-be/**']
+
+concurrency:
+  group: ci-backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agrichain-be
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # Testcontainers dùng Docker của runner: MySQL/Mongo/Redis/Cassandra/Neo4j
+      - name: Maven verify (unit + integration + migrations)
+        run: mvn -B -ntp verify
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: 'true'
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-reports
+          path: agrichain-be/target/surefire-reports/
+          retention-days: 7

@@ -1,0 +1,31 @@
+# OS & Editors
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+.vscode/
+
+# Node / Web / Mobile
+node_modules/
+dist/
+build/
+coverage/
+.expo/
+.expo-shared/
+*.apk
+*.aab
+*.ipa
+
+# Java / Maven
+target/
+
+# IoT / PlatformIO
+.pio/
+
+# Secrets & local env
+.env
+.env.local
+.env.*.local
+agrichain-be/docker/mosquitto/passwd
+*.pem
+*.key
