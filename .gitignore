@@ -29,3 +29,5 @@ target/
 agrichain-be/docker/mosquitto/passwd
 *.pem
 *.key
+
+.docs
